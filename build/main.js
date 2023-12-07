@@ -18,42 +18,72 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 var utils = __toESM(require("@iobroker/adapter-core"));
+var import_icloudjs = __toESM(require("icloudjs"));
 class Findmy extends utils.Adapter {
+  icloud = void 0;
+  findMyService = void 0;
+  unload = false;
+  timeout = void 0;
   constructor(options = {}) {
     super({
       ...options,
       name: "findmy"
     });
     this.on("ready", this.onReady.bind(this));
-    this.on("stateChange", this.onStateChange.bind(this));
+    this.on("message", this.onMessage.bind(this));
     this.on("unload", this.onUnload.bind(this));
   }
   async onReady() {
     this.setState("info.connection", false, true);
-    this.log.info("config option1: " + this.config.option1);
-    this.log.info("config option2: " + this.config.option2);
-    await this.setObjectNotExistsAsync("testVariable", {
-      type: "state",
-      common: {
-        name: "testVariable",
-        type: "boolean",
-        role: "indicator",
-        read: true,
-        write: true
-      },
-      native: {}
+    this.config.pollInterval = Number.isNaN(this.config.pollInterval) || this.config.pollInterval < 1 ? 3 : this.config.pollInterval;
+    const username = this.config.username;
+    const password = this.config.password;
+    if (typeof username !== "string" || username == "" || typeof password != "string" || password == "") {
+      return;
+    }
+    this.icloud = new import_icloudjs.default({
+      username: this.config.username,
+      password: this.config.password,
+      saveCredentials: false,
+      trustDevice: true,
+      authMethod: "srp",
+      dataDirectory: "/opt/iobroker/iobroker-data"
     });
-    this.subscribeStates("testVariable");
-    await this.setStateAsync("testVariable", true);
-    await this.setStateAsync("testVariable", { val: true, ack: true });
-    await this.setStateAsync("testVariable", { val: true, ack: true, expire: 30 });
-    let result = await this.checkPasswordAsync("admin", "iobroker");
-    this.log.info("check user admin pw iobroker: " + result);
-    result = await this.checkGroupAsync("admin", "admin");
-    this.log.info("check group user admin group admin: " + result);
+    await this.icloud.authenticate();
+    this.log.debug(this.icloud.status);
+    try {
+      await this.icloud.awaitReady;
+    } catch (error) {
+      return;
+    }
+    this.setState("info.connection", true, true);
+    this.findMyService = this.icloud.getService("findme");
+    this.endlessUpdater();
+  }
+  endlessUpdater() {
+    this.timeout = this.setTimeout(
+      async () => {
+        if (this.unload)
+          return;
+        if (!this.icloud || !this.findMyService)
+          return;
+        await this.icloud.awaitReady;
+        this.findMyService = this.icloud.getService("findme");
+        await this.findMyService.refresh();
+        for (const device of this.findMyService.devices.values()) {
+          this.log.debug(
+            device.deviceInfo.name + "	" + Math.floor(device.deviceInfo.batteryLevel * 100) + "% " + device.deviceInfo.batteryStatus
+          );
+        }
+        this.endlessUpdater();
+      },
+      (this.config.pollInterval || 1) * 6e4
+    );
   }
   onUnload(callback) {
     try {
+      this.unload = true;
+      this.setState("info.connection", false, true);
       callback();
     } catch (e) {
       callback();
@@ -64,6 +94,52 @@ class Findmy extends utils.Adapter {
       this.log.info(`state ${id} changed: ${state.val} (ack = ${state.ack})`);
     } else {
       this.log.info(`state ${id} deleted`);
+    }
+  }
+  async onMessage(obj) {
+    if (typeof obj === "object" && obj.message) {
+      if (obj.command === "send") {
+        this.log.info("send command");
+        if (obj.callback)
+          this.sendTo(obj.from, obj.command, "Message received", obj.callback);
+      }
+      switch (obj.command) {
+        case "connect":
+          {
+            const username = obj.message.username;
+            const password = obj.message.password;
+            if (typeof username !== "string" || username == "" || typeof password != "string" || password == "") {
+              if (obj.callback)
+                this.sendTo(obj.from, obj.command, "Message wrong", obj.callback);
+              return;
+            } else
+              this.log.debug(`user: ${username} password: ${password}`);
+            this.icloud = new import_icloudjs.default({
+              username,
+              password,
+              saveCredentials: false,
+              trustDevice: true,
+              authMethod: "srp",
+              dataDirectory: "/opt/iobroker/iobroker-data"
+            });
+            await this.icloud.authenticate();
+            this.log.debug(this.icloud.status);
+            if (this.icloud.status === "MfaRequested") {
+              if (obj.callback)
+                this.sendTo(obj.from, obj.command, "Message done wait for secret", obj.callback);
+            }
+          }
+          break;
+        case "secret":
+          {
+            if (this.icloud) {
+              await this.icloud.provideMfaCode(obj.message.secret);
+              await this.icloud.awaitReady;
+              this.log.debug("Hello, " + this.icloud.accountInfo.dsInfo.fullName);
+            }
+          }
+          break;
+      }
     }
   }
 }

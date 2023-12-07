@@ -2,15 +2,43 @@
     "i18n": true,
     "type": "panel",
     "items": {
-        "option1": {
-            "type": "checkbox",
-            "label": "option1",
+        "username": {
+            "type": "text",
+            "label": "username",
             "newLine": true
         },
-        "option2": {
-            "type": "text",
-            "label": "option2",
+        "password": {
+            "type": "password",
+            "label": "password",
             "newLine": true
+        },
+        "secret": {
+            "type": "text",
+            "label": "secret",
+            "newLine": true,
+            "doNotSave": true,
+            "default": ""
+        },
+        "connect": {
+            "type": "sendTo",
+            "command": "connect",
+            "jsonData": "{\"username\": \"${data.username}\", \"password\": \"${data.password}\"}",
+            "label": "connect",
+            "newLine": true
+        },
+        "addsecret": {
+            "type": "sendTo",
+            "command": "secret",
+            "jsonData": "{\"secret\": \"${data.secret}\"}",
+            "label": "2 FA",
+            "newLine": true
+        },
+        "pollInterval": {
+            "type": "number",
+            "label": "pollInterval",
+            "newLine": true,
+            "min": 1,
+            "default": 5
         }
     }
 }

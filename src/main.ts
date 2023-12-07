@@ -5,20 +5,26 @@
 // The adapter-core module gives you access to the core ioBroker functions
 // you need to create an adapter
 import * as utils from '@iobroker/adapter-core';
+import iCloud from 'icloudjs';
+import { iCloudFindMyService } from 'icloudjs/build/services/findMy';
 
 // Load your modules here, e.g.:
 // import * as fs from "fs";
 
 class Findmy extends utils.Adapter {
+    icloud: iCloud | undefined = undefined;
+    findMyService: iCloudFindMyService | undefined = undefined;
+    unload: boolean = false;
+    timeout: ioBroker.Timeout | undefined = undefined;
     public constructor(options: Partial<utils.AdapterOptions> = {}) {
         super({
             ...options,
             name: 'findmy',
         });
         this.on('ready', this.onReady.bind(this));
-        this.on('stateChange', this.onStateChange.bind(this));
+        // this.on('stateChange', this.onStateChange.bind(this));
         // this.on('objectChange', this.onObjectChange.bind(this));
-        // this.on('message', this.onMessage.bind(this));
+        this.on('message', this.onMessage.bind(this));
         this.on('unload', this.onUnload.bind(this));
     }
 
@@ -31,67 +37,65 @@ class Findmy extends utils.Adapter {
         // Reset the connection indicator during startup
         this.setState('info.connection', false, true);
 
-        // The adapters config (in the instance object everything under the attribute "native") is accessible via
-        // this.config:
-        this.log.info('config option1: ' + this.config.option1);
-        this.log.info('config option2: ' + this.config.option2);
+        this.config.pollInterval =
+            Number.isNaN(this.config.pollInterval) || this.config.pollInterval < 1 ? 3 : this.config.pollInterval;
+        const username = this.config.username;
+        const password = this.config.password;
+        if (typeof username !== 'string' || username == '' || typeof password != 'string' || password == '') {
+            return;
+        }
 
-        /*
-		For every state in the system there has to be also an object of type state
-		Here a simple template for a boolean variable named "testVariable"
-		Because every adapter instance uses its own unique namespace variable names can't collide with other adapters variables
-		*/
-        await this.setObjectNotExistsAsync('testVariable', {
-            type: 'state',
-            common: {
-                name: 'testVariable',
-                type: 'boolean',
-                role: 'indicator',
-                read: true,
-                write: true,
-            },
-            native: {},
+        this.icloud = new iCloud({
+            username: this.config.username,
+            password: this.config.password,
+            saveCredentials: false,
+            trustDevice: true,
+            authMethod: 'srp',
+            dataDirectory: '/opt/iobroker/iobroker-data',
         });
-
-        // In order to get state updates, you need to subscribe to them. The following line adds a subscription for our variable we have created above.
-        this.subscribeStates('testVariable');
-        // You can also add a subscription for multiple states. The following line watches all states starting with "lights."
-        // this.subscribeStates('lights.*');
-        // Or, if you really must, you can also watch all states. Don't do this if you don't need to. Otherwise this will cause a lot of unnecessary load on the system:
-        // this.subscribeStates('*');
-
-        /*
-			setState examples
-			you will notice that each setState will cause the stateChange event to fire (because of above subscribeStates cmd)
-		*/
-        // the variable testVariable is set to true as command (ack=false)
-        await this.setStateAsync('testVariable', true);
-
-        // same thing, but the value is flagged "ack"
-        // ack should be always set to true if the value is received from or acknowledged from the target system
-        await this.setStateAsync('testVariable', { val: true, ack: true });
-
-        // same thing, but the state is deleted after 30s (getState will return null afterwards)
-        await this.setStateAsync('testVariable', { val: true, ack: true, expire: 30 });
-
-        // examples for the checkPassword/checkGroup functions
-        let result = await this.checkPasswordAsync('admin', 'iobroker');
-        this.log.info('check user admin pw iobroker: ' + result);
-
-        result = await this.checkGroupAsync('admin', 'admin');
-        this.log.info('check group user admin group admin: ' + result);
+        await this.icloud.authenticate();
+        this.log.debug(this.icloud.status);
+        //if (this.icloud.status === 'MfaRequested') {
+        //    await icloud.provideMfaCode('123456');
+        //}
+        try {
+            await this.icloud.awaitReady;
+        } catch (error: any) {
+            return;
+        }
+        this.setState('info.connection', true, true);
+        this.findMyService = this.icloud.getService('findme');
+        this.endlessUpdater();
     }
+    private endlessUpdater(): void {
+        this.timeout = this.setTimeout(
+            async () => {
+                if (this.unload) return;
+                if (!this.icloud || !this.findMyService) return;
+                
+                await this.findMyService.refresh();
+                for (const device of this.findMyService.devices.values()) {
+                    this.log.debug(
+                        device.deviceInfo.name +
+                            '\t' +
+                            Math.floor(device.deviceInfo.batteryLevel * 100) +
+                            '% ' +
+                            device.deviceInfo.batteryStatus,
+                    );
+                }
 
+                this.endlessUpdater();
+            },
+            (this.config.pollInterval || 1) * 60000,
+        );
+    }
     /**
      * Is called when adapter shuts down - callback has to be called under any circumstances!
      */
     private onUnload(callback: () => void): void {
         try {
-            // Here you must clear all timeouts or intervals that may still be active
-            // clearTimeout(timeout1);
-            // clearTimeout(timeout2);
-            // ...
-            // clearInterval(interval1);
+            this.unload = true;
+            this.setState('info.connection', false, true);
 
             callback();
         } catch (e) {
@@ -132,17 +136,58 @@ class Findmy extends utils.Adapter {
     //  * Some message was sent to this instance over message box. Used by email, pushover, text2speech, ...
     //  * Using this method requires "common.messagebox" property to be set to true in io-package.json
     //  */
-    // private onMessage(obj: ioBroker.Message): void {
-    //     if (typeof obj === 'object' && obj.message) {
-    //         if (obj.command === 'send') {
-    //             // e.g. send email or pushover or whatever
-    //             this.log.info('send command');
+    private async onMessage(obj: ioBroker.Message): Promise<void> {
+        if (typeof obj === 'object' && obj.message) {
+            if (obj.command === 'send') {
+                // e.g. send email or pushover or whatever
+                this.log.info('send command');
 
-    //             // Send response in callback if required
-    //             if (obj.callback) this.sendTo(obj.from, obj.command, 'Message received', obj.callback);
-    //         }
-    //     }
-    // }
+                // Send response in callback if required
+                if (obj.callback) this.sendTo(obj.from, obj.command, 'Message received', obj.callback);
+            }
+            switch (obj.command) {
+                case 'connect':
+                    {
+                        const username = obj.message.username;
+                        const password = obj.message.password;
+                        if (
+                            typeof username !== 'string' ||
+                            username == '' ||
+                            typeof password != 'string' ||
+                            password == ''
+                        ) {
+                            if (obj.callback) this.sendTo(obj.from, obj.command, 'Message wrong', obj.callback);
+                            return;
+                        } else this.log.debug(`user: ${username} password: ${password}`);
+
+                        this.icloud = new iCloud({
+                            username: username,
+                            password: password,
+                            saveCredentials: false,
+                            trustDevice: true,
+                            authMethod: 'srp',
+                            dataDirectory: '/opt/iobroker/iobroker-data',
+                        });
+                        await this.icloud.authenticate();
+                        this.log.debug(this.icloud.status);
+                        if (this.icloud.status === 'MfaRequested') {
+                            if (obj.callback)
+                                this.sendTo(obj.from, obj.command, 'Message done wait for secret', obj.callback);
+                        }
+                    }
+                    break;
+                case 'secret':
+                    {
+                        if (this.icloud) {
+                            await this.icloud.provideMfaCode(obj.message.secret);
+                            await this.icloud.awaitReady;
+                            this.log.debug('Hello, ' + this.icloud.accountInfo!.dsInfo.fullName);
+                        }
+                    }
+                    break;
+            }
+        }
+    }
 }
 
 if (require.main !== module) {

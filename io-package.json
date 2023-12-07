@@ -59,9 +59,11 @@
         "compact": true,
         "connectionType": "cloud",
         "dataSource": "push",
+        "messagebox": true,
         "adminUI": {
             "config": "json"
         },
+        "tier": 3,
         "dependencies": [
             {
                 "js-controller": ">=3.3.22"
@@ -74,8 +76,9 @@
         ]
     },
     "native": {
-        "option1": true,
-        "option2": "42"
+        "username": "",
+        "password": "",
+        "pollInterval": 3
     },
     "objects": [],
     "instanceObjects": [
@@ -100,5 +103,13 @@
             },
             "native": {}
         }
-    ]
+    ],
+    "encryptedNative": [
+        "password",
+        "data2"
+      ],
+      "protectedNative": [
+        "password",
+        "data2"
+      ]
 }
